@@ -16,6 +16,7 @@ use App\Models\VoidedDocument;
 use App\Services\GreenterService;
 use App\Services\FileService;
 use App\Services\PdfService;
+use App\Support\AmountInWords;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Exception;
@@ -583,30 +584,9 @@ class DocumentService
         return false;
     }
 
-    protected function convertNumberToWords(float $numero, string $moneda): string
+    protected function convertNumberToWords(int|float|string $numero, string $moneda): string
     {
-        $monedaName = $moneda === 'PEN' ? 'SOLES' : 'DÓLARES AMERICANOS';
-        $entero = intval($numero);
-        $decimales = intval(($numero - $entero) * 100);
-        
-        // Esta es una implementación básica, se puede mejorar con una librería
-        $letras = $this->numeroALetras($entero);
-        
-        return strtoupper($letras . ' CON ' . sprintf('%02d', $decimales) . '/100 ' . $monedaName);
-    }
-
-    protected function numeroALetras($numero): string
-    {
-        // Implementación básica - se puede reemplazar con una librería más completa
-        if ($numero == 0) return 'CERO';
-        
-        $unidades = ['', 'UNO', 'DOS', 'TRES', 'CUATRO', 'CINCO', 'SEIS', 'SIETE', 'OCHO', 'NUEVE'];
-        $decenas = ['', '', 'VEINTE', 'TREINTA', 'CUARENTA', 'CINCUENTA', 'SESENTA', 'SETENTA', 'OCHENTA', 'NOVENTA'];
-        $especiales = ['DIEZ', 'ONCE', 'DOCE', 'TRECE', 'CATORCE', 'QUINCE', 'DIECISÉIS', 'DIECISIETE', 'DIECIOCHO', 'DIECINUEVE'];
-        
-        // Esta es una implementación muy básica
-        // En producción se debe usar una librería completa
-        return 'NÚMERO EN LETRAS'; // Placeholder
+        return (new AmountInWords())->convert($numero, $moneda);
     }
 
     protected function prepareDocumentData($document, string $documentType): array

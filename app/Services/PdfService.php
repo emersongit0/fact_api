@@ -12,6 +12,7 @@ use BaconQrCode\Renderer\RendererStyle\RendererStyle;
 use BaconQrCode\Writer;
 use Exception;
 use App\Services\PdfTemplateService;
+use App\Support\AmountInWords;
 use Illuminate\Support\Facades\Log;
 
 class PdfService
@@ -435,84 +436,7 @@ class PdfService
 
     public function numeroALetras($numero): string
     {
-        $unidades = [
-            '', 'uno', 'dos', 'tres', 'cuatro', 'cinco', 'seis', 'siete', 'ocho', 'nueve',
-            'diez', 'once', 'doce', 'trece', 'catorce', 'quince', 'dieciséis', 'diecisiete', 
-            'dieciocho', 'diecinueve', 'veinte'
-        ];
-
-        $decenas = [
-            '', '', 'veinte', 'treinta', 'cuarenta', 'cincuenta', 'sesenta', 'setenta', 'ochenta', 'noventa'
-        ];
-
-        $centenas = [
-            '', 'ciento', 'doscientos', 'trescientos', 'cuatrocientos', 'quinientos',
-            'seiscientos', 'setecientos', 'ochocientos', 'novecientos'
-        ];
-
-        // Convertir número a entero y obtener decimales
-        $partes = explode('.', number_format($numero, 2, '.', ''));
-        $entero = (int)$partes[0];
-        $decimales = $partes[1];
-
-        if ($entero == 0) {
-            return "cero con $decimales/100";
-        }
-
-        $resultado = $this->convertirEntero($entero, $unidades, $decenas, $centenas);
-        
-        return trim($resultado) . " con $decimales/100";
-    }
-
-    protected function convertirEntero($numero, $unidades, $decenas, $centenas): string
-    {
-        if ($numero < 21) {
-            return $unidades[$numero];
-        }
-
-        if ($numero < 100) {
-            $dec = (int)($numero / 10);
-            $uni = $numero % 10;
-            
-            if ($uni == 0) {
-                return $decenas[$dec];
-            } else {
-                return $decenas[$dec] . ' y ' . $unidades[$uni];
-            }
-        }
-
-        if ($numero < 1000) {
-            $cen = (int)($numero / 100);
-            $resto = $numero % 100;
-            
-            $resultado = ($numero == 100) ? 'cien' : $centenas[$cen];
-            
-            if ($resto > 0) {
-                $resultado .= ' ' . $this->convertirEntero($resto, $unidades, $decenas, $centenas);
-            }
-            
-            return $resultado;
-        }
-
-        // Para miles, millones, etc.
-        if ($numero < 1000000) {
-            $miles = (int)($numero / 1000);
-            $resto = $numero % 1000;
-            
-            if ($miles == 1) {
-                $resultado = 'mil';
-            } else {
-                $resultado = $this->convertirEntero($miles, $unidades, $decenas, $centenas) . ' mil';
-            }
-            
-            if ($resto > 0) {
-                $resultado .= ' ' . $this->convertirEntero($resto, $unidades, $decenas, $centenas);
-            }
-            
-            return $resultado;
-        }
-
-        return 'número muy grande';
+        return (new AmountInWords())->convert($numero);
     }
 
     /**
