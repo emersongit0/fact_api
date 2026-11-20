@@ -39,6 +39,8 @@ Route::post('/auth/login', [AuthController::class, 'login']);
 // RUTAS PROTEGIDAS (CON AUTENTICACIÓN)
 // ========================
 Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
+    Route::post('/integraciones/spsd/documentos', [\App\Http\Controllers\Api\SpsdInvoiceController::class, 'store']);
+    Route::get('/integraciones/spsd/documentos/{operation}', [\App\Http\Controllers\Api\SpsdInvoiceController::class, 'show'])->whereUuid('operation');
 
     // ========================
     // AUTENTICACIÓN Y USUARIO
