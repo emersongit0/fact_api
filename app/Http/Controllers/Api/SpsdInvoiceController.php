@@ -40,6 +40,25 @@ class SpsdInvoiceController extends Controller
         return $this->response($this->company($request), strtolower($operation), 200);
     }
 
+    public function send(Request $request, string $operation, DocumentService $documents): JsonResponse
+    {
+        $company = $this->company($request);
+        $operation = strtolower($operation);
+        $total = $request->validate(['total' => 'required|decimal:0,2|gt:0'])['total'];
+        $row = DB::selectOne('CALL spsd_invoice_find(?, ?)', [$company, $operation]);
+        abort_if($row === null, 404);
+        $invoice = \App\Models\Invoice::with(['company', 'branch', 'client'])->findOrFail($row->id);
+        abort_unless(!$invoice->company->modo_produccion
+            && $invoice->company->getInvoiceEndpoint() === 'https://e-beta.sunat.gob.pe/ol-ti-itcpfegem-beta/billService', 409);
+
+        // Confirmar la reserva antes de contactar a SUNAT. Si el proceso cae, se conserva PROCESANDO.
+        $claim = DB::selectOne('CALL spsd_invoice_claim_send(?, ?, ?)', [$company, $operation, $total]);
+        if ((int) $claim->reserved === 1) {
+            $documents->sendToSunat($invoice, 'invoice');
+        }
+        return $this->response($company, $operation, 200);
+    }
+
     private function company(Request $request): int
     {
         $user = $request->user();

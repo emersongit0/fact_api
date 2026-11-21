@@ -41,6 +41,7 @@ Route::post('/auth/login', [AuthController::class, 'login']);
 Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     Route::post('/integraciones/spsd/documentos', [\App\Http\Controllers\Api\SpsdInvoiceController::class, 'store']);
     Route::get('/integraciones/spsd/documentos/{operation}', [\App\Http\Controllers\Api\SpsdInvoiceController::class, 'show'])->whereUuid('operation');
+    Route::post('/integraciones/spsd/documentos/{operation}/enviar', [\App\Http\Controllers\Api\SpsdInvoiceController::class, 'send'])->whereUuid('operation');
 
     // ========================
     // AUTENTICACIÓN Y USUARIO
