@@ -14,6 +14,8 @@ use Greenter\Model\Sale\Legend;
 use Greenter\Model\Sale\FormaPagos\FormaPagoContado;
 use Greenter\Model\Sale\FormaPagos\FormaPagoCredito;
 use Greenter\Model\Sale\Cuota;
+use Greenter\Model\Sale\Prepayment;
+use Greenter\Model\Sale\Charge;
 use Greenter\Model\Summary\Summary;
 use Greenter\Model\Summary\SummaryDetail;
 use Greenter\Model\Summary\SummaryPerception;
@@ -337,9 +339,33 @@ class GreenterService
             $invoice->setMtoIGVGratuitas($invoiceData['mto_igv_gratuitas']);
         }
 
-        // Anticipos
-        if (isset($invoiceData['mto_anticipos']) && $invoiceData['mto_anticipos'] > 0) {
-            $invoice->setMtoAnticipo($invoiceData['mto_anticipos']);
+        // El total aplicado y sus referencias viajan juntos en el XML de regularización.
+        $anticipos = $invoiceData['anticipos'] ?? [];
+        $totalAnticipos = (string) ($invoiceData['mto_anticipos'] ?? '0');
+        if ($anticipos !== [] || bccomp($totalAnticipos, '0', 2) !== 0) {
+            $referencias = [];
+            $suma = '0.00';
+            foreach ($anticipos as $anticipo) {
+                $numero = $anticipo['numero_documento'] ?? '';
+                $total = (string) ($anticipo['total'] ?? '');
+                if (!preg_match('/^F[A-Z0-9]{3}-[0-9]{1,8}$/D', $numero)
+                    || isset($referencias[$numero])
+                    || !preg_match('/^[0-9]+(?:\.[0-9]{1,2})?$/D', $total)
+                    || bccomp($total, '0', 2) <= 0) {
+                    throw new \InvalidArgumentException('Referencia o importe de anticipo inválido.');
+                }
+                $referencias[$numero] = (new Prepayment())
+                    ->setTipoDocRel('02')
+                    ->setNroDocRel($numero)
+                    ->setTotal((float) $total);
+                $suma = bcadd($suma, $total, 2);
+            }
+            if ($referencias === [] || bccomp($suma, $totalAnticipos, 2) !== 0) {
+                throw new \InvalidArgumentException('El total de anticipos no coincide con sus referencias.');
+            }
+            $invoice->setAnticipos(array_values($referencias))
+                ->setTotalAnticipos((float) $suma);
+            $this->aplicarDeduccionAnticipoGravado($invoice, $invoiceData, $anticipos);
         }
 
         // Detalles
@@ -431,6 +457,40 @@ class GreenterService
         }
 
         return $note;
+    }
+
+    private function aplicarDeduccionAnticipoGravado(GreenterInvoice $invoice, array $datos, array $anticipos): void
+    {
+        // El flujo SPSD beta utiliza una sola tasa y operaciones gravadas.
+        $tasas = [];
+        foreach ($datos['detalles'] as $detalle) {
+            if (($detalle['tip_afe_igv'] ?? null) !== '10' || empty($detalle['porcentaje_igv'])) {
+                throw new \InvalidArgumentException('La regularización requiere líneas gravadas con IGV.');
+            }
+            $tasas[(string) $detalle['porcentaje_igv']] = (float) $detalle['porcentaje_igv'];
+        }
+        if (count($tasas) !== 1 || $invoice->getDescuentos()) {
+            throw new \InvalidArgumentException('La regularización requiere una tasa única y ninguna otra deducción.');
+        }
+        $tasa = reset($tasas) / 100;
+        $baseOriginal = (float) $datos['mto_oper_gravadas'];
+        $baseAnticipos = 0.0;
+        foreach ($anticipos as $anticipo) {
+            $baseAnticipos += isset($anticipo['base_gravada'])
+                ? (float) $anticipo['base_gravada']
+                : round((float) $anticipo['total'] / (1 + $tasa), 2);
+        }
+        $baseAnticipos = round($baseAnticipos, 2);
+        if ($baseAnticipos <= 0 || $baseAnticipos >= $baseOriginal) {
+            throw new \InvalidArgumentException('La base del anticipo debe ser menor que la base de la venta.');
+        }
+        $baseRestante = round($baseOriginal - $baseAnticipos, 2);
+        $igvRestante = round($baseRestante * $tasa, 2);
+        $invoice->setDescuentos([(new Charge())->setCodTipo('04')
+            ->setMontoBase($baseOriginal)->setMonto($baseAnticipos)
+            ->setFactor(round($baseAnticipos / $baseOriginal, 5))]);
+        $invoice->setMtoOperGravadas($baseRestante)->setMtoIGV($igvRestante)
+            ->setTotalImpuestos($igvRestante);
     }
 
     protected function getFormaPago(array $invoiceData)

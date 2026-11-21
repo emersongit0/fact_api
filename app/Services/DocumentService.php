@@ -61,6 +61,9 @@ class DocumentService
             
             // Calcular totales automáticamente
             $totals = $this->calculateTotals($data['detalles'], $globalData);
+            if (!empty($globalData['anticipos']) && $totals['mto_imp_venta'] <= 0) {
+                throw new \InvalidArgumentException('La regularización requiere un importe restante positivo.');
+            }
             
             // Crear factura
             $invoice = Invoice::create([
@@ -95,7 +98,7 @@ class DocumentService
                 'sub_total' => $totals['sub_total'],
                 'mto_imp_venta' => $totals['mto_imp_venta'],
                 'redondeo' => $totals['redondeo'],
-                'total_anticipos' => $totals['total_anticipos'],
+                'mto_anticipos' => $totals['total_anticipos'],
                 'descuento_global' => $totals['descuento_global'],
                 'detalles' => $data['detalles'],
                 'leyendas' => $this->generateLegends($totals['mto_imp_venta'], $data['moneda'] ?? 'PEN', $data),
@@ -857,6 +860,105 @@ class DocumentService
         return str_pad($nextCorrelativo, 3, '0', STR_PAD_LEFT);
     }
 
+    public function createFullInvoiceCreditNote(Invoice $invoice, string $reason, string $date): CreditNote
+    {
+        return $this->createInvoiceCorrection($invoice, $reason, $date, null, null);
+    }
+
+    /** Corrección experimental beta del saldo fiscal de una regularización gravada. */
+    public function createBetaSettlementCreditNote(Invoice $invoice, string $reason, string $date): CreditNote
+    {
+        return DB::transaction(function () use ($invoice, $reason, $date) {
+            $invoice = Invoice::with(['client', 'company'])->lockForUpdate()->findOrFail($invoice->id);
+            if ($invoice->company->modo_produccion || $invoice->estado_sunat !== 'ACEPTADO'
+                || !$invoice->cdr_path || (float) $invoice->mto_anticipos <= 0
+                || $invoice->forma_pago_tipo !== 'Contado' || count($invoice->detalles) !== 1) {
+                throw new \InvalidArgumentException('La corrección beta requiere una regularización gravada al contado aceptada.');
+            }
+            $existing = CreditNote::where('invoice_id', $invoice->id)->first();
+            if ($existing) {
+                if ($existing->des_motivo !== $reason || $existing->cod_motivo !== '01') {
+                    throw new \InvalidArgumentException('Existe una corrección con otros datos.');
+                }
+                return $existing;
+            }
+            $detail = $invoice->detalles[0];
+            if (($detail['tip_afe_igv'] ?? null) !== '10' || empty($detail['porcentaje_igv'])
+                || !empty($detail['isc']) || !empty($detail['icbper'])) {
+                throw new \InvalidArgumentException('La prueba requiere una línea gravada simple.');
+            }
+            $detail['cantidad'] = 1;
+            $detail['descripcion'] = 'Anulacion del saldo regularizado: '.$detail['descripcion'];
+            $detail['mto_valor_unitario'] = round((float) $invoice->mto_imp_venta
+                / (1 + (float) $detail['porcentaje_igv'] / 100), 2);
+            $note = $this->createCreditNote([
+                'invoice_id' => $invoice->id, 'company_id' => $invoice->company_id,
+                'branch_id' => $invoice->branch_id, 'serie' => $invoice->serie,
+                'client' => $invoice->client->toArray(), 'moneda' => $invoice->moneda,
+                'tipo_doc_afectado' => '01', 'num_doc_afectado' => $invoice->numero_completo,
+                'cod_motivo' => '01', 'des_motivo' => $reason, 'fecha_emision' => $date,
+                'detalles' => [$detail],
+            ]);
+            if (bccomp((string) $note->mto_imp_venta, (string) $invoice->mto_imp_venta, 2) !== 0) {
+                throw new \InvalidArgumentException('El saldo de la nota no concilia con la regularización.');
+            }
+            return $note;
+        });
+    }
+
+    public function createPartialReturnCreditNote(
+        Invoice $invoice, string $reason, string $date, int $line, int $quantity
+    ): CreditNote {
+        return $this->createInvoiceCorrection($invoice, $reason, $date, $line, $quantity);
+    }
+
+    private function createInvoiceCorrection(
+        Invoice $invoice, string $reason, string $date, ?int $line, ?int $quantity
+    ): CreditNote {
+        return DB::transaction(function () use ($invoice, $reason, $date, $line, $quantity) {
+            $invoice = Invoice::with(['client', 'company'])->lockForUpdate()->findOrFail($invoice->id);
+            if ($invoice->estado_sunat !== 'ACEPTADO' || !$invoice->cdr_path
+                || (float) $invoice->mto_anticipos !== 0.0 || $invoice->tipo_operacion !== '0101'
+                || $invoice->forma_pago_tipo !== 'Contado') {
+                throw new \InvalidArgumentException('La corrección requiere una factura simple aceptada con CDR.');
+            }
+            $partial = $line !== null;
+            $code = $partial ? '07' : '01';
+            $details = $invoice->detalles;
+            $context = [];
+            if ($partial) {
+                $original = $details[$line - 1] ?? null;
+                if (!$original || $quantity < 1 || $quantity > $original['cantidad']
+                    || (count($details) === 1 && $quantity == $original['cantidad'])
+                    || ($original['tip_afe_igv'] ?? null) !== '10'
+                    || !empty($original['descuentos']) || !empty($original['isc'])
+                    || !empty($original['icbper']) || !empty($original['ivap'])) {
+                    throw new \InvalidArgumentException('Indica una devolución parcial de una línea gravada simple.');
+                }
+                $original['cantidad'] = $quantity;
+                $details = [$original];
+                $context = ['linea_factura' => $line, 'cantidad_devuelta' => $quantity];
+            }
+            $existing = CreditNote::where('invoice_id', $invoice->id)->first();
+            if ($existing) {
+                if ($existing->des_motivo !== $reason || $existing->cod_motivo !== $code
+                    || ($partial && $existing->datos_adicionales != $context)) {
+                    throw new \InvalidArgumentException('La factura ya tiene una corrección con otros datos.');
+                }
+                return $existing;
+            }
+
+            return $this->createCreditNote([
+                'invoice_id' => $invoice->id, 'company_id' => $invoice->company_id,
+                'branch_id' => $invoice->branch_id, 'serie' => $invoice->serie,
+                'client' => $invoice->client->toArray(), 'moneda' => $invoice->moneda,
+                'tipo_doc_afectado' => '01', 'num_doc_afectado' => $invoice->numero_completo,
+                'cod_motivo' => $code, 'des_motivo' => $reason,
+                'fecha_emision' => $date, 'detalles' => $details, 'datos_adicionales' => $context,
+            ]);
+        });
+    }
+
     public function createCreditNote(array $data): CreditNote
     {
         return DB::transaction(function () use ($data) {
@@ -940,6 +1042,7 @@ class DocumentService
             
             // Crear la nota de crédito
             $creditNote = CreditNote::create([
+                'invoice_id' => $data['invoice_id'] ?? null,
                 'company_id' => $company->id,
                 'branch_id' => $branch->id,
                 'client_id' => $client->id,

@@ -39,9 +39,13 @@ Route::post('/auth/login', [AuthController::class, 'login']);
 // RUTAS PROTEGIDAS (CON AUTENTICACIÓN)
 // ========================
 Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
+    Route::get('/integraciones/spsd/documentos/{operation}/archivos', [\App\Http\Controllers\Api\SpsdInvoiceController::class, 'files'])->whereUuid('operation');
+    Route::get('/integraciones/spsd/documentos/{operation}/archivos/{type}/{id}/{format}', [\App\Http\Controllers\Api\SpsdInvoiceController::class, 'download'])->whereUuid('operation');
     Route::post('/integraciones/spsd/documentos', [\App\Http\Controllers\Api\SpsdInvoiceController::class, 'store']);
     Route::get('/integraciones/spsd/documentos/{operation}', [\App\Http\Controllers\Api\SpsdInvoiceController::class, 'show'])->whereUuid('operation');
     Route::post('/integraciones/spsd/documentos/{operation}/enviar', [\App\Http\Controllers\Api\SpsdInvoiceController::class, 'send'])->whereUuid('operation');
+    Route::post('/integraciones/spsd/documentos/{operation}/anulacion-total', [\App\Http\Controllers\Api\SpsdInvoiceController::class, 'creditNote'])->whereUuid('operation');
+    Route::post('/integraciones/spsd/documentos/{operation}/devolucion-parcial', [\App\Http\Controllers\Api\SpsdInvoiceController::class, 'partialCreditNote'])->whereUuid('operation');
 
     // ========================
     // AUTENTICACIÓN Y USUARIO
